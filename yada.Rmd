@@ -1,0 +1,128 @@
+---
+title: "yada"
+output: html_document
+date: '2023-08-28'
+---
+
+```{r setup, include=FALSE}
+library(baseballr)
+library(ggplot2)
+library(viridis)
+```
+```{r message=FALSE, warning=FALSE, include=FALSE}
+table=chadwick_player_lu()
+table=subset(table, pro_played_last > "2016")
+table=subset(table, key_mlbam > 0)
+```
+
+
+```{r Player ID function}
+player_id<-function(last_name, first_name, data) 
+  {id<- table$key_mlbam[table$name_last == last_name & table$name_first == first_name]
+if (length(id) == 0) 
+{return("player not found")} 
+  else{ return(id)}}
+
+Player<-player_id("Verlander", "Justin", table)
+
+dat<-scrape_statcast_savant(
+  start_date = '2023-03-25',
+  end_date = Sys.Date(),
+  playerid = Player,
+  player_type = "pitcher")
+```
+```{r Vertical Approach Angle Calc include=FALSE}
+vyf = -sqrt(dat$vy0^2-(2*dat$ay*(50-17/12)))
+t=(vyf-dat$vy0)/dat$ay
+vzf = dat$vz0 + (dat$az*t)
+dat$vaa=-atan(vzf/vyf)*(180/pi)
+```
+
+
+
+
+
+
+```{r}
+vaa=data.frame("AJ Smith-Shawver")
+vaa$Name=vaa$X.AJ.Smith.Shawver.
+vaa$X.AJ.Smith.Shawver.<-NULL
+ 
+fb=subset(dat, pitch_type == "FF")
+vaa$fbvelo=mean(fb$release_speed)
+vaa$fbvaa=mean(fb$vaa)
+vaa$fbspinrate=mean(fb$release_spin_rate)
+vaa$fbext=mean(fb$release_extension)
+vaa$fbrelheight=mean(fb$release_pos_y)
+sl=subset(dat, pitch_type == "SL")
+vaa$slvelo=mean(sl$release_speed)
+vaa$slvaa=mean(sl$vaa)
+vaa$slspinrate=mean(sl$release_spin_rate)
+vaa$slext=mean(sl$release_extension)
+vaa$slrelheight=mean(sl$release_pos_y)
+cb=subset(dat, pitch_type == "CU")
+vaa$cbvelo=mean(cb$release_speed)
+vaa$cbvaa=mean(cb$vaa)
+vaa$cbspinrate=mean(cb$release_spin_rate)
+vaa$cbext=mean(cb$release_extension)
+vaa$cbrelheight=mean(cb$release_pos_y)
+ch=subset(dat, pitch_type == "CH")
+vaa$chvelo=mean(ch$release_speed)
+vaa$chvaa=mean(ch$vaa)
+vaa$chspinrate=mean(ch$release_spin_rate)
+vaa$chext=mean(ch$release_extension)
+vaa$chrelheight=mean(ch$release_pos_y)
+```
+
+
+
+
+
+
+
+```{r message=FALSE, warning=FALSE}
+x <- c(-.95,.95,.95,-.95,-.95)
+z <- c(1.6,1.6,3.5,3.5,1.6)
+sz <- data.frame(x,z)
+dat<-scrape_statcast_savant(
+  start_date = '2023-03-25',
+  end_date = Sys.Date(),
+  playerid = 700363,
+  player_type = "pitcher")
+
+pitch_desc <- dat$pitch_type
+pitch_desc[which(pitch_desc=='CH')] <- "Changeup"
+pitch_desc[which(pitch_desc=='CU')] <- "Curveball"
+pitch_desc[which(pitch_desc=='FC')] <- "Cutter"
+pitch_desc[which(pitch_desc=='FF')] <- "Four seam"
+pitch_desc[which(pitch_desc=='FS')] <- "Split Flinger"
+pitch_desc[which(pitch_desc=='FT')] <- "Two-Seam"
+pitch_desc[which(pitch_desc=='KC')] <- "Kuckle-Curve"
+pitch_desc[which(pitch_desc=='SI')] <- "Sinker"
+pitch_desc[which(pitch_desc=='SL')] <- "Slider"
+```
+
+```{r warning=FALSE}
+chart<-ggplot() +
+  geom_path(data = sz, aes(x=x, y=z)) +
+  coord_equal() +
+  geom_point(data = dat, aes(x = plate_x, y = plate_z, color = pitch_desc)) +
+##Using the color package 'Viridis' here
+  scale_color_viridis(discrete = TRUE, option = "C") +
+  labs(color = "Pitch Type",
+       title = "Pitch Chart",
+       subtitle = "2023") +
+  ylab("Feet Above Homeplate") +
+  xlab("Feet From Homeplate") +
+  theme(plot.title=element_text(face="bold",hjust=-.015,vjust=0,colour="#3C3C3C",size=20),
+        plot.subtitle=element_text(face="plain", hjust= -.015, vjust= .09, colour="#3C3C3C", size = 12)) +
+  theme(axis.text.x=element_text(vjust = .5, size=11,colour="#535353",face="bold")) +
+  theme(axis.text.y=element_text(size=11,colour="#535353",face="bold")) +
+  theme(axis.title.y=element_text(size=11,colour="#535353",face="bold",vjust=1.5)) +
+  theme(axis.title.x=element_text(size=11,colour="#535353",face="bold",vjust=0)) +
+  theme(panel.grid.major.y = element_line(color = "#bad2d4", size = .5)) +
+  theme(panel.grid.major.x = element_line(color = "#bdd2d4", size = .5)) +
+  theme(panel.background = element_rect(fill = "white")) 
+chart
+```
+
