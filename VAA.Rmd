@@ -1,0 +1,47 @@
+---
+title: "VAA"
+output: pdf_document
+date: '2023-08-01'
+---
+
+```{r}
+library(baseballr)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r}
+table=chadwick_player_lu()
+table=subset(table, pro_played_last > "2016")
+table=subset(table, key_mlbam > 0)
+# all the players now have an mlbam id and played in the statcast era
+```
+
+```{r}
+#Screw the other chunk, this grabs all pitching data from opening day, then calculates VAA and gives histogram 
+dat=scrape_statcast_savant_pitcher_all("2023-03-29", Sys.Date(), pitcherid = NULL)
+dat=subset(dat, pitch_type == "FF")
+#formula is from fangraphs article
+vyf = -sqrt(dat$vy0^2-(2*dat$ay*(50-17/12)))
+t=(vyf-dat$vy0)/dat$ay
+vzf = dat$vz0 + (dat$az*t)
+dat$vaa=-atan(vzf/vyf)*(180/pi)
+#takes out all of the weird na columns
+dat<-dat[!is.na(dat$vaa),]
+```
+
+```{r}
+dat <- dat %>%
+  group_by(player_name) %>%
+  summarize(avg_vaa = mean(vaa),
+            avg_ext = mean(release_extension),
+            avg_spin = mean(release_spin_rate),
+            avg_velo = mean(release_speed))
+            
+```
+
+```{r}
+fdat<-fg_pitcher_leaders(x = 2023, y = 2023, qual = 10)
+gdat<-data.frame(fdat$Name, fdat$wFB)
+```
+
