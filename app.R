@@ -163,5 +163,3 @@ server <- function(input, output, session) {
 shinyApp(ui = ui, server = server)
 
 
-# Run the application
-shinyApp(ui = ui, server = server)
