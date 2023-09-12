@@ -1,124 +1,167 @@
 library(baseballr)
+library(shiny)
 library(dplyr)
 library(plotly)
-library(formattable)
+library(ggplot2)
+library(readxl)
 
-dat <- scrape_statcast_savant_pitcher_all("2023-03-25", Sys.Date(), pitcherid = NULL)
+library(openxlsx)
 
-vyf = -sqrt(dat$vy0^2 - (2 * dat$ay * (50 - 17/12)))
-t = (vyf - dat$vy0) / dat$ay
-vzf = dat$vz0 + (dat$az * t)
-dat$vaa = -atan(vzf / vyf) * (180 / pi)
+tryCatch({
+  data <- read.xlsx("~/IDtable.xlsx")
+}, error = function(e) {
+  print(e)
+})
 
-dat$pitch_type[which(dat$pitch_type == 'CH')] <- "Changeup"
-dat$pitch_type[which(dat$pitch_type == 'CU')] <- "Curveball"
-dat$pitch_type[which(dat$pitch_type == 'FC')] <- "Cutter"
-dat$pitch_type[which(dat$pitch_type == 'FF')] <- "Four seam"
-dat$pitch_type[which(dat$pitch_type == 'FS')] <- "Split Flinger"
-dat$pitch_type[which(dat$pitch_type == 'FT')] <- "Two-Seam"
-dat$pitch_type[which(dat$pitch_type == 'KC')] <- "Kuckle-Curve"
-dat$pitch_type[which(dat$pitch_type == 'SI')] <- "Sinker"
-dat$pitch_type[which(dat$pitch_type == 'SL')] <- "Slider"
-dat$pitch_type[which(dat$pitch_type == "ST")] <- "Sweeper"
-dat$pitch_type[which(dat$pitch_type == "FO")] <- "Forkball"
-dat$pitch_type[which(dat$pitch_type == "KN")] <- "Knuckleball"
-
-library(shiny)
+player_id <- function(last_name, first_name, data) {
+  id <- data$key_mlbam[data$name_last == last_name & data$name_first == first_name]
+  if (length(id) == 0) {
+    return("player not found")
+  } else {
+    return(id)
+  }
+}
 
 ui <- fluidPage(
   titlePanel("Pitcher Report"),
-  fluidRow(
-    column(3,
-           selectInput("selected_name", "Select a Name:", choices = unique(dat$player_name))
-    ),
-    column(9,
-           mainPanel(
-             plotlyOutput("pitch_movement_plot"),  # Move the plot to the left side
-             textOutput("selected_output"),
-             tableOutput("Avg_Stats"),
-             tableOutput("Percentile_Rankings")  # Add a new table for percentile rankings
-           )
+  sidebarLayout(
+    sidebarPanel(
+      textInput("last_name", "Last Name", ""),
+      textInput("first_name", "First Name", ""),
+      actionButton("search_btn", "Retrieve Data")
+      ),
+    mainPanel(
+      plotlyOutput("pitch_movement_plot"), 
+      plotlyOutput("pitch_location_plot"),
+      tableOutput("Avg_Stats")
     )
   )
 )
 
-server <- function(input, output) {
+server <- function(input, output, session) {
+  player_data <- eventReactive(input$search_btn, {
+    last_name <- input$last_name
+    first_name <- input$first_name
+    player_id_result <- player_id(last_name, first_name, data)
+    
+    if (player_id_result == "player not found") {
+      return(NULL)  # Player not found, return NULL
+    } else {
+      # Fetch pitch data for the selected player based on their ID
+      dat <- scrape_statcast_savant(
+        start_date = '2023-03-25',
+        end_date = Sys.Date(),
+        playerid = player_id_result,
+        player_type = "pitcher"
+      )
+      return(dat)
+    }
+  })
+  
+  observeEvent(input$search_btn, {
+    # Update the choices in the selectInput based on the retrieved player data
+    updateSelectInput(session, "selected_name", choices = unique(player_data()$player_name))
+  })
+  
   output$selected_output <- renderText({
     selected_name <- input$selected_name
+    selected_name
   })
   
   output$Avg_Stats <- renderTable({
-    selected_name <- input$selected_name
-    player_avg_data <- dat %>%
-      filter(player_name == selected_name) %>%
-      group_by(player_name, pitch_type) %>%
-      summarize(
-        Average_SpinRate = mean(release_spin_rate, na.rm = TRUE),
-        Average_Velocity = mean(release_speed, na.rm = TRUE),
-        Average_Extension = mean(release_extension, na.rm = TRUE),
-        Average_ReleaseHeight = mean(release_pos_y, na.rm = TRUE),
-        Average_VAA = mean(vaa, na.rm = TRUE),
-        XBA = mean(estimated_ba_using_speedangle, na.rm = TRUE),
-        XWOBA = mean(estimated_woba_using_speedangle, na.rm = TRUE),
-        Average_Exit_Velocity = mean(launch_speed, na.rm = TRUE),
-        Average_Launch_Angle = mean(launch_angle, na.rm = TRUE)
-      )
-    player_avg_data
-  })
-  
-  # Calculate percentile rankings
-  percentile_rankings <- reactive({
-    selected_name <- input$selected_name
-    dat %>%
-      filter(player_name == selected_name) %>%
-      summarise(
-        Percentile_SpinRate = ecdf(release_spin_rate)(mean(release_spin_rate, na.rm = TRUE)),
-        Percentile_Velocity = ecdf(release_speed)(mean(release_speed, na.rm = TRUE)),
-        Percentile_Extension = ecdf(release_extension)(mean(release_extension, na.rm = TRUE)),
-        Percentile_ReleaseHeight = ecdf(release_pos_y)(mean(release_pos_y, na.rm = TRUE)),
-        Percentile_VAA = ecdf(vaa)(mean(vaa, na.rm = TRUE)),
-        Percentile_XBA = ecdf(estimated_ba_using_speedangle)(mean(estimated_ba_using_speedangle, na.rm = TRUE)),
-        Percentile_XWOBA = ecdf(estimated_woba_using_speedangle)(mean(estimated_woba_using_speedangle, na.rm = TRUE)),
-        Percentile_ExitVelocity = ecdf(launch_speed)(mean(launch_speed, na.rm = TRUE)),
-        Percentile_LaunchAngle = ecdf(launch_angle)(mean(launch_angle, na.rm = TRUE))
-      )
-  })
-  
-  # Display percentile rankings in a table
-  output$Percentile_Rankings <- renderTable({
-    percentile_rankings()
+    player_selected_data <- player_data()
+    
+    if (!is.null(player_selected_data)) {
+      # Retrieve data for the selected player and create the player_avg_data table
+      player_avg_data <- player_selected_data %>%
+        group_by(player_name, pitch_name) %>%
+        summarize(
+          Average_SpinRate = mean(release_spin_rate, na.rm = TRUE),
+          Average_Velocity = mean(release_speed, na.rm = TRUE),
+          Average_Extension = mean(release_extension, na.rm = TRUE),
+          Average_ReleaseHeight = mean(release_pos_y, na.rm = TRUE),
+          XBA = mean(estimated_ba_using_speedangle, na.rm = TRUE),
+          XWOBA = mean(estimated_woba_using_speedangle, na.rm = TRUE),
+          Average_Exit_Velocity = mean(launch_speed, na.rm = TRUE),
+          Average_Launch_Angle = mean(launch_angle, na.rm = TRUE)
+        )
+      player_avg_data
+    }
   })
   
   # Create a summary table to count pitch types
   pitch_counts <- reactive({
-    selected_name <- input$selected_name
-    dat %>%
-      filter(player_name == selected_name) %>%
-      group_by(pitch_type) %>%
-      summarise(Pitch_Count = n())
+    player_selected_data <- player_data()
+    
+    if (!is.null(player_selected_data)) {
+      player_selected_data %>%
+        group_by(pitch_name) %>%
+        summarise(Pitch_Count = n())
+    }
+  })
+  pitch_location_data <- reactive({
+    player_selected_data <- player_data()
+    
+    if (!is.null(player_selected_data)) {
+      return(player_selected_data)
+    }
+    return(NULL)
   })
   
   # Create a scatter plot for pitch movement with labels for pitch counts
   output$pitch_movement_plot <- renderPlotly({
-    selected_name <- input$selected_name
-    pitch_movement_data <- dat %>%
-      filter(player_name == selected_name)
+    player_selected_data <- player_data()
     
-    # Create a scatter plot using plotly with color based on pitch_type and labels for pitch counts
-    plot <- plot_ly(data = pitch_movement_data, x = ~pfx_x, y = ~pfx_z, type = 'scatter',
-                    mode = 'markers', text = ~paste(pitch_type, " (", pitch_counts()$Pitch_Count[match(pitch_type, pitch_counts()$pitch_type)], ")", sep = ""), 
-                    color = ~pitch_type, colors = 'Set1', marker = list(size = 10))
+    if (!is.null(player_selected_data)) {
+      pitch_movement_data <- player_selected_data
+      
+      # Create a scatter plot using plotly with color based on pitch_name and labels for pitch counts
+      plot <- plot_ly(data = pitch_movement_data, x = ~pfx_x, y = ~pfx_z, type = 'scatter',
+                      mode = 'markers', text = ~paste(pitch_name, " (", pitch_counts()$Pitch_Count[match(pitch_name, pitch_counts()$pitch_name)], ")", sep = ""), 
+                      color = ~pitch_name, colors = 'Set1', marker = list(size = 5))
+      
+      # Customize the plot layout
+      plot <- plot %>% layout(
+        title = "Pitch Movement by Type",
+        xaxis = list(title = "Horizontal Movement (pfx_x)"),
+        yaxis = list(title = "Vertical Movement (pfx_z)")
+      )
+      
+      return(plot)
+    }
+  })
+  output$pitch_location_plot <- renderPlotly({
+    pitch_location_data_selected <- pitch_location_data()
     
-    # Customize the plot layout
-    plot <- plot %>% layout(
-      title = "Pitch Movement by Type",
-      xaxis = list(title = "Horizontal Movement (pfx_x)"),
-      yaxis = list(title = "Vertical Movement (pfx_z)")
-    )
-    
-    return(plot)
+    if (!is.null(pitch_location_data_selected)) {
+      # Create a scatter plot for pitch location using plotly
+      location_plot <- plot_ly(
+        data = pitch_location_data_selected,
+        x = ~plate_x,
+        y = ~plate_z,
+        type = 'scatter',
+        mode = 'markers',
+        text = ~paste(pitch_name, " (", pitch_counts()$Pitch_Count[match(pitch_name, pitch_counts()$pitch_name)], ")", sep = ""),
+        color = ~pitch_name,
+        colors = 'Set1',
+        marker = list(size = 3)
+      )
+      
+      # Customize the plot layout
+      location_plot <- location_plot %>% layout(
+        title = "Pitch Location in the Strike Zone",
+        xaxis = list(title = "Horizontal Location (plate_x)"),
+        yaxis = list(title = "Vertical Location (plate_z)")
+      )
+      
+      return(location_plot)
+    }
   })
 }
+
+# Run the application
+shinyApp(ui = ui, server = server)
+
 
 # Run the application
 shinyApp(ui = ui, server = server)
