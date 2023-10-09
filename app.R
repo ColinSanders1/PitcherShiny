@@ -80,7 +80,6 @@ server <- function(input, output, session) {
           Average_Velocity = mean(release_speed, na.rm = TRUE),
           Average_Extension = mean(release_extension, na.rm = TRUE),
           Average_ReleaseHeight = mean(release_pos_y, na.rm = TRUE),
-          XBA = mean(estimated_ba_using_speedangle, na.rm = TRUE),
           XWOBA = mean(estimated_woba_using_speedangle, na.rm = TRUE),
           Average_Exit_Velocity = mean(launch_speed, na.rm = TRUE),
           Average_Launch_Angle = mean(launch_angle, na.rm = TRUE)
@@ -109,25 +108,25 @@ server <- function(input, output, session) {
   })
   
   # Create a scatter plot for pitch movement with labels for pitch counts
-  output$pitch_movement_plot <- renderPlotly({
-    player_selected_data <- player_data()
+  output$pitch_location_plot <- renderPlotly({
+    pitch_location_data_selected <- pitch_location_data()
     
-    if (!is.null(player_selected_data)) {
-      pitch_movement_data <- player_selected_data
+    if (!is.null(pitch_location_data_selected)) {
+      # Create a pitch location heatmap using ggplot2
+      heatmap_plot <- ggplot(data = pitch_location_data_selected, aes(x = plate_x, y = plate_z)) +
+        geom_tile(aes(fill = pitch_name), width = 0.02, height = 0.02) +  # Adjust width and height as needed
+        labs(
+          title = "Pitch Location Heatmap by Pitch Type",
+          x = "Horizontal Location (plate_x)",
+          y = "Vertical Location (plate_z)",
+          fill = "Pitch Type"
+        ) +
+        theme_minimal()
       
-      # Create a scatter plot using plotly with color based on pitch_name and labels for pitch counts
-      plot <- plot_ly(data = pitch_movement_data, x = ~pfx_x, y = ~pfx_z, type = 'scatter',
-                      mode = 'markers', text = ~paste(pitch_name, " (", pitch_counts()$Pitch_Count[match(pitch_name, pitch_counts()$pitch_name)], ")", sep = ""), 
-                      color = ~pitch_name, colors = 'Set1', marker = list(size = 5))
+      # Convert the ggplot2 plot to a plotly plot
+      location_plot <- ggplotly(heatmap_plot)
       
-      # Customize the plot layout
-      plot <- plot %>% layout(
-        title = "Pitch Movement by Type",
-        xaxis = list(title = "Horizontal Movement (pfx_x)"),
-        yaxis = list(title = "Vertical Movement (pfx_z)")
-      )
-      
-      return(plot)
+      return(location_plot)
     }
   })
   output$pitch_location_plot <- renderPlotly({
