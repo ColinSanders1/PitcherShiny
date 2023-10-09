@@ -80,7 +80,6 @@ server <- function(input, output, session) {
           Average_Velocity = mean(release_speed, na.rm = TRUE),
           Average_Extension = mean(release_extension, na.rm = TRUE),
           Average_ReleaseHeight = mean(release_pos_y, na.rm = TRUE),
-          XBA = mean(estimated_ba_using_speedangle, na.rm = TRUE),
           XWOBA = mean(estimated_woba_using_speedangle, na.rm = TRUE),
           Average_Exit_Velocity = mean(launch_speed, na.rm = TRUE),
           Average_Launch_Angle = mean(launch_angle, na.rm = TRUE)
