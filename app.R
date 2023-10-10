@@ -4,7 +4,6 @@ library(dplyr)
 library(plotly)
 library(ggplot2)
 library(readxl)
-
 library(openxlsx)
 
 tryCatch({
@@ -29,11 +28,13 @@ ui <- fluidPage(
       textInput("last_name", "Last Name", ""),
       textInput("first_name", "First Name", ""),
       actionButton("search_btn", "Retrieve Data")
-      ),
+    ),
     mainPanel(
       plotlyOutput("pitch_movement_plot"), 
       plotlyOutput("pitch_location_plot"),
-      tableOutput("Avg_Stats")
+      tableOutput("Avg_Stats"),
+      plotlyOutput("Pitch_perc_by_ball_count"),
+      plotlyOutput("Pitch_perc_by_strike_count")
     )
   )
 )
@@ -88,16 +89,6 @@ server <- function(input, output, session) {
     }
   })
   
-  # Create a summary table to count pitch types
-  pitch_counts <- reactive({
-    player_selected_data <- player_data()
-    
-    if (!is.null(player_selected_data)) {
-      player_selected_data %>%
-        group_by(pitch_name) %>%
-        summarise(Pitch_Count = n())
-    }
-  })
   pitch_location_data <- reactive({
     player_selected_data <- player_data()
     
@@ -105,6 +96,58 @@ server <- function(input, output, session) {
       return(player_selected_data)
     }
     return(NULL)
+  })
+  
+  pitch_counts <- reactive({
+    player_selected_data <- player_data()
+    
+    if (!is.null(player_selected_data)) {
+      pitch_counts_data <- player_selected_data %>%
+        group_by(pitch_name) %>%
+        summarise(Pitch_Count = n())
+      
+      # Calculate the percentage for each pitch type
+      pitch_counts_data <- pitch_counts_data %>%
+        mutate(Percentage = (Pitch_Count / sum(Pitch_Count)) * 100)
+      
+      return(pitch_counts_data)
+    }
+  })
+  
+  # Create a summary table to count pitch types by strikes
+  pitch_counts_strikes <- reactive({
+    player_selected_data <- player_data()
+    
+    if (!is.null(player_selected_data)) {
+      pitch_counts_data <- player_selected_data %>%
+        group_by(pitch_name, strikes) %>%
+        summarise(Pitch_Count = n())
+      
+      # Calculate the percentage for each pitch type by strike count
+      pitch_counts_data <- pitch_counts_data %>%
+        group_by(strikes) %>%
+        mutate(Percentage = (Pitch_Count / sum(Pitch_Count)) * 100)
+      
+      return(pitch_counts_data)
+    }
+  })
+  
+  # Create a summary table to count pitch types by balls
+  pitch_counts_balls <- reactive({
+    player_selected_data <- player_data()
+    
+    if (!is.null(player_selected_data)) {
+      pitch_counts_data <- player_selected_data %>%
+        group_by(pitch_name, balls) %>%
+        summarise(Pitch_Count = n())
+      
+      # Calculate the percentage for each pitch type by ball count
+      pitch_counts_data <- pitch_counts_data %>%
+        group_by(balls) %>%
+        mutate(Percentage = (Pitch_Count / sum(Pitch_Count)) * 100)
+      
+      return(pitch_counts_data)
+    }
   })
   
   # Create a scatter plot for pitch movement with labels for pitch counts
@@ -129,11 +172,11 @@ server <- function(input, output, session) {
       return(plot)
     }
   })
+  
   output$pitch_location_plot <- renderPlotly({
     pitch_location_data_selected <- pitch_location_data()
     
     if (!is.null(pitch_location_data_selected)) {
-      # Create a scatter plot for pitch location using plotly
       location_plot <- plot_ly(
         data = pitch_location_data_selected,
         x = ~plate_x,
@@ -146,7 +189,6 @@ server <- function(input, output, session) {
         marker = list(size = 3)
       )
       
-      # Customize the plot layout
       location_plot <- location_plot %>% layout(
         title = "Pitch Location in the Strike Zone",
         xaxis = list(title = "Horizontal Location (plate_x)"),
@@ -156,7 +198,37 @@ server <- function(input, output, session) {
       return(location_plot)
     }
   })
+  
+  output$Pitch_perc_by_strike_count <- renderPlotly({
+    bar_chart <- plot_ly(data = pitch_counts_strikes(), x = ~factor(strikes), y = ~Percentage,
+                         type = 'bar', color = ~pitch_name, text = ~paste(pitch_name, ": ", Percentage, "%"),
+                         marker = list(line = list(width = 2))) %>%
+      layout(
+        title = "Pitch Type Percentages by Strike Count",
+        xaxis = list(title = "Strikes"),
+        yaxis = list(title = "Percentage (%)"),
+        barmode = 'stack'
+      )
+    
+    return(bar_chart)
+  })
+  
+  # Create a bar chart for pitch type percentages by ball count
+  output$Pitch_perc_by_ball_count <- renderPlotly({
+    bar_chart <- plot_ly(data = pitch_counts_balls(), x = ~factor(balls), y = ~Percentage,
+                         type = 'bar', color = ~pitch_name, text = ~paste(pitch_name, ": ", Percentage, "%"),
+                         marker = list(line = list(width = 2))) %>%
+      layout(
+        title = "Pitch Type Percentages by Ball Count",
+        xaxis = list(title = "Balls"),
+        yaxis = list(title = "Percentage (%)"),
+        barmode = 'stack'
+      )
+    
+    return(bar_chart)
+  })
 }
 
 # Run the application
 shinyApp(ui = ui, server = server)
+
