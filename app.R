@@ -26,6 +26,7 @@ ui <- fluidPage(
     sidebarPanel(
       textInput("first_name", "First Name", ""),
       textInput("last_name", "Last Name", ""),
+      selectInput("selected_year", "Select Year", choices = 2016:as.numeric(format(Sys.Date(), "%Y"))), 
       actionButton("search_btn", "Retrieve Data")
     ),
     mainPanel(
@@ -48,9 +49,10 @@ server <- function(input, output, session) {
     if (player_id_result == "player not found") {
       return(NULL)  
     } else {
+
       dat <- scrape_statcast_savant(
-        start_date = '2023-03-25',
-        end_date = Sys.Date(),
+        start_date = paste(input$selected_year, "-03-25", sep = ''),  
+        end_date = paste(input$selected_year, "-12-12", sep = ''),  
         playerid = player_id_result,
         player_type = "pitcher"
       )
@@ -59,6 +61,7 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$search_btn, {
+    # Update the choices in the selectInput based on the retrieved player data
     updateSelectInput(session, "selected_name", choices = unique(player_data()$player_name))
   })
   
@@ -70,6 +73,7 @@ server <- function(input, output, session) {
     player_selected_data1 <- player_data()
     
     if (!is.null(player_selected_data1)) {
+      # Retrieve data for the selected player and create the player_avg_data table
       player_avg_data1 <- player_selected_data1 %>%
         group_by(player_name, pitch_name) %>%
         summarize(
@@ -91,6 +95,7 @@ server <- function(input, output, session) {
     player_selected_data2$vaa = -atan(vzf / vyf) * (180 / pi)
     
     if (!is.null(player_selected_data2)) {
+      # Retrieve data for the selected player and create the player_avg_data table
       player_avg_data2 <- player_selected_data2 %>%
         group_by(player_name, pitch_name) %>%
         summarize(Average_Vertical_Approach = mean(vaa, na.rm = TRUE),
@@ -119,6 +124,7 @@ server <- function(input, output, session) {
         group_by(pitch_name) %>%
         summarise(Pitch_Count = n())
       
+      # Calculate the percentage for each pitch type
       pitch_counts_data <- pitch_counts_data %>%
         mutate(Percentage = (Pitch_Count / sum(Pitch_Count)) * 100)
       
@@ -134,6 +140,7 @@ server <- function(input, output, session) {
         group_by(pitch_name, strikes, stand) %>%
         summarise(Pitch_Count = n())
       
+      # Calculate the percentage for each pitch type by strike count and stand
       pitch_counts_data <- pitch_counts_data %>%
         group_by(strikes, stand) %>%
         mutate(Percentage = (Pitch_Count / sum(Pitch_Count)) * 100)
@@ -150,6 +157,7 @@ server <- function(input, output, session) {
         group_by(pitch_name, balls, stand) %>%
         summarise(Pitch_Count = n())
       
+      # Calculate the percentage for each pitch type by ball count and stand
       pitch_counts_data <- pitch_counts_data %>%
         group_by(balls, stand) %>%
         mutate(Percentage = (Pitch_Count / sum(Pitch_Count)) * 100)
@@ -175,16 +183,19 @@ server <- function(input, output, session) {
   })
   
   
+  # Create a scatter plot for pitch movement with labels for pitch counts
   output$pitch_movement_plot <- renderPlotly({
     player_selected_data <- player_data()
     
     if (!is.null(player_selected_data)) {
       pitch_movement_data <- player_selected_data
       
+      # Create a scatter plot using plotly with color based on pitch_name and labels for pitch counts
       plot <- plot_ly(data = pitch_movement_data, x = ~pfx_x, y = ~pfx_z, type = 'scatter',
                       mode = 'markers', text = ~paste(pitch_name, " (", pitch_counts()$Pitch_Count[match(pitch_name, pitch_counts()$pitch_name)], ")", sep = ""), 
                       color = ~pitch_name, colors = 'Set1', marker = list(size = 5))
       
+      # Customize the plot layout
       plot <- plot %>% layout(
         title = "Pitch Movement by Type",
         xaxis = list(title = "Horizontal Movement (pfx_x)"),
@@ -225,6 +236,7 @@ server <- function(input, output, session) {
     pitch_percentages_strikes <- pitch_percentages_by_strikes()
     
     if (!is.null(pitch_percentages_strikes)) {
+      # Create a ggplot object with facets by stand along the top
       plot <- ggplot(data = pitch_percentages_strikes, aes(x = factor(strikes), y = Percentage, fill = pitch_name)) +
         geom_bar(stat = "identity", position = "dodge", width = 0.8) +
         labs(title = "Pitch Type Percentages by Strike Count",
@@ -232,8 +244,9 @@ server <- function(input, output, session) {
              y = "Percentage (%)",
              fill = "Pitch Name") +
         theme_minimal() +
-        facet_wrap(~stand, ncol = 2) 
+        facet_wrap(~stand, ncol = 2)  # Facet by "stand" along the top with 2 columns
       
+      # Convert ggplot object to plotly
       plot <- ggplotly(plot)
       
       return(plot)
@@ -244,6 +257,7 @@ server <- function(input, output, session) {
     pitch_percentages_balls <- pitch_percentages_by_balls()
     
     if (!is.null(pitch_percentages_balls)) {
+      # Create a ggplot object with facets by stand along the top
       plot <- ggplot(data = pitch_percentages_balls, aes(x = factor(balls), y = Percentage, fill = pitch_name)) +
         geom_bar(stat = "identity", position = "dodge", width = 0.8) +
         labs(title = "Pitch Type Percentages by Ball Count",
@@ -251,7 +265,7 @@ server <- function(input, output, session) {
              y = "Percentage (%)",
              fill = "Pitch Name") +
         theme_minimal() +
-        facet_wrap(~stand, ncol = 2)  
+        facet_wrap(~stand, ncol = 2)  # Facet by "stand" along the top with 2 columns
       
       plot <- ggplotly(plot)
       
