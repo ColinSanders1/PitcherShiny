@@ -34,14 +34,15 @@ ui <- fluidPage(
       plotlyOutput("pitch_location_plot"),
       tableOutput("Avg_Stats1"),
       tableOutput("Avg_Stats2"),
-      plotlyOutput("Pitch_perc_combined_str"),
-      plotlyOutput("Pitch_perc_combined_ball")
+      plotlyOutput("Combined_Pitch_Perc_L"),
+      plotlyOutput("Combined_Pitch_Perc_R")
     )
   )
 )
 
 server <- function(input, output, session) {
-  player_data <- eventReactive(input$search_btn, {
+  player_data <- reactive({
+    req(input$search_btn)
     last_name <- input$last_name
     first_name <- input$first_name
     player_id_result <- player_id(last_name, first_name, data)
@@ -49,7 +50,7 @@ server <- function(input, output, session) {
     if (player_id_result == "player not found") {
       return(NULL)  
     } else {
-
+      
       dat <- scrape_statcast_savant(
         start_date = paste(input$selected_year, "-03-25", sep = ''),  
         end_date = paste(input$selected_year, "-12-12", sep = ''),  
@@ -232,47 +233,86 @@ server <- function(input, output, session) {
     }
   })
   
-  output$Pitch_perc_combined_str <- renderPlotly({
+ combined_pitch_percentages <- reactive({
     pitch_percentages_strikes <- pitch_percentages_by_strikes()
+    pitch_percentages_balls <- pitch_percentages_by_balls()
     
-    if (!is.null(pitch_percentages_strikes)) {
-      # Create a ggplot object with facets by stand along the top
-      plot <- ggplot(data = pitch_percentages_strikes, aes(x = factor(strikes), y = Percentage, fill = pitch_name)) +
-        geom_bar(stat = "identity", position = "dodge", width = 0.8) +
-        labs(title = "Pitch Type Percentages by Strike Count",
-             x = "Strikes",
-             y = "Percentage (%)",
-             fill = "Pitch Name") +
-        theme_minimal() +
-        facet_wrap(~stand, ncol = 2)  # Facet by "stand" along the top with 2 columns
+    if (!is.null(pitch_percentages_strikes) && !is.null(pitch_percentages_balls)) {
+      # Merge data
+      combined_data <- merge(pitch_percentages_strikes, pitch_percentages_balls, 
+                             by = c("pitch_name", "stand"), suffixes = c("_strikes", "_balls"))
       
-      # Convert ggplot object to plotly
-      plot <- ggplotly(plot)
+      # Create a new variable for combined ball and strike counts
+      combined_data$ball_strike_count <- paste0("B", combined_data$balls, "-S", combined_data$strikes)
       
-      return(plot)
+      return(combined_data)
+    } else {
+      return(NULL)
     }
   })
   
-  output$Pitch_perc_combined_ball <- renderPlotly({
-    pitch_percentages_balls <- pitch_percentages_by_balls()
-    
-    if (!is.null(pitch_percentages_balls)) {
-      # Create a ggplot object with facets by stand along the top
-      plot <- ggplot(data = pitch_percentages_balls, aes(x = factor(balls), y = Percentage, fill = pitch_name)) +
-        geom_bar(stat = "identity", position = "dodge", width = 0.8) +
-        labs(title = "Pitch Type Percentages by Ball Count",
-             x = "Balls",
-             y = "Percentage (%)",
-             fill = "Pitch Name") +
-        theme_minimal() +
-        facet_wrap(~stand, ncol = 2)  # Facet by "stand" along the top with 2 columns
-      
-      plot <- ggplotly(plot)
-      
-      return(plot)
+ output$Combined_Pitch_Perc_L <- renderPlotly({
+   combined_data <- combined_pitch_percentages()
+   
+   if (!is.null(combined_data)) {
+     filtered_data <- combined_data[combined_data$stand == "L",]
+     
+     # Create ggplot object with facets
+     plot <- ggplot(data = filtered_data, aes(x = ball_strike_count, y = Percentage_strikes, fill = pitch_name)) +
+       geom_bar(stat = "identity", position = "dodge", width = 0.8) +
+       geom_bar(aes(x = ball_strike_count, y = Percentage_balls, fill = pitch_name), 
+                stat = "identity", position = "dodge", width = 0.8) +
+       labs(title = "Pitch Type Percentages by Count vs LHB",
+            x = "Count",
+            y = "Percentage (%)",
+            fill = "Pitch Name") +
+       theme_minimal() +
+       theme(axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels
+             axis.title = element_text(size = 10),  # Increase font size of axis labels
+             legend.title = element_text(size = 12),  # Increase font size of legend title
+             legend.text = element_text(size = 10),  # Increase font size of legend text
+             plot.title = element_text(size = 12)) +  # Increase font size of plot title
+       guides(fill = guide_legend(reverse = TRUE))  # Reverse legend order for better readability
+     
+     # Convert ggplot object to plotly
+     plot <- ggplotly(plot, tooltip = "text")
+     
+     return(plot)
+   }
+ })
+ 
+ output$Combined_Pitch_Perc_R <- renderPlotly({
+   combined_data <- combined_pitch_percentages()
+   
+   if (!is.null(combined_data)) {
+     filtered_data <- combined_data[combined_data$stand == "R",]
+     
+     # Create ggplot object with facets
+     plot <- ggplot(data = filtered_data, aes(x = ball_strike_count, y = Percentage_strikes, fill = pitch_name)) +
+       geom_bar(stat = "identity", position = "dodge", width = 0.8) +
+       geom_bar(aes(x = ball_strike_count, y = Percentage_balls, fill = pitch_name), 
+                stat = "identity", position = "dodge", width = 0.8) +
+       labs(title = "Pitch Type Percentages by Count vs RHB",
+            x = "Count",
+            y = "Percentage (%)",
+            fill = "Pitch Name") +
+       theme_minimal() +
+       theme(axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels
+             axis.title = element_text(size = 10),  # Increase font size of axis labels
+             legend.title = element_text(size = 12),  # Increase font size of legend title
+             legend.text = element_text(size = 10),  # Increase font size of legend text
+             plot.title = element_text(size = 12)) +  # Increase font size of plot title
+       guides(fill = guide_legend(reverse = TRUE))  # Reverse legend order for better readability
+     
+     
+     # Convert ggplot object to plotly
+     plot <- ggplotly(plot, tooltip = "text")
+     
+     return(plot)
+   }
+ })
+ 
     }
-  })
-}
 
 # Run the application
 shinyApp(ui = ui, server = server)
