@@ -4,6 +4,7 @@ library(dplyr)
 library(plotly)
 library(readxl)
 library(openxlsx)
+library(ggplot2)
 
 tryCatch({
   data <- read.xlsx("IDtable.xlsx")
@@ -26,16 +27,18 @@ ui <- fluidPage(
     sidebarPanel(
       textInput("first_name", "First Name", ""),
       textInput("last_name", "Last Name", ""),
-      selectInput("selected_year", "Select Year", choices = 2016:as.numeric(format(Sys.Date(), "%Y"))), 
-      actionButton("search_btn", "Retrieve Data")
+      selectInput("selected_year", "Select Year", choices = 2016:as.numeric(format(Sys.Date(), "%Y"))),
+      actionButton("search_btn", "Retrieve Data"),
+      uiOutput("pitch_type_ui")
     ),
     mainPanel(
-      plotlyOutput("pitch_movement_plot"), 
-      plotlyOutput("pitch_location_plot"),
+      plotlyOutput("pitch_movement_plot"),
+      plotOutput("pitch_location_heatmap"),
       tableOutput("Avg_Stats1"),
       tableOutput("Avg_Stats2"),
       plotlyOutput("Combined_Pitch_Perc_L"),
-      plotlyOutput("Combined_Pitch_Perc_R")
+      plotlyOutput("Combined_Pitch_Perc_R"),
+      tableOutput("CSW_Table")
     )
   )
 )
@@ -50,7 +53,6 @@ server <- function(input, output, session) {
     if (player_id_result == "player not found") {
       return(NULL)  
     } else {
-      
       dat <- scrape_statcast_savant(
         start_date = paste(input$selected_year, "-03-25", sep = ''),  
         end_date = paste(input$selected_year, "-12-12", sep = ''),  
@@ -62,27 +64,34 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$search_btn, {
-    # Update the choices in the selectInput based on the retrieved player data
     updateSelectInput(session, "selected_name", choices = unique(player_data()$player_name))
   })
   
-  output$selected_output <- renderText({
-    selected_name <- input$selected_name
-    selected_name
+  observe({
+    if (!is.null(player_data())) {
+      pitch_names <- unique(player_data()$pitch_name)
+      output$pitch_type_ui <- renderUI({
+        tagList(
+          selectInput("selected_heatmap_pitch_type", "Select Heatmap Pitch Type", choices = pitch_names)
+        )
+      })
+    }
   })
+  
   output$Avg_Stats1 <- renderTable({
     player_selected_data1 <- player_data()
     
     if (!is.null(player_selected_data1)) {
-      # Retrieve data for the selected player and create the player_avg_data table
       player_avg_data1 <- player_selected_data1 %>%
-        group_by(player_name, pitch_name) %>%
+        group_by(pitch_name) %>%
         summarize(
+          Num_pitches = n(),
           Average_SpinRate = mean(release_spin_rate, na.rm = TRUE),
           Average_Velocity = mean(release_speed, na.rm = TRUE),
           Average_Extension = mean(release_extension, na.rm = TRUE),
-          Average_ReleaseHeight = mean(release_pos_y, na.rm = TRUE),
-        )
+          Average_ReleaseHeight = mean(release_pos_y, na.rm = TRUE)
+        ) %>%
+        filter(!is.na(pitch_name) & pitch_name != "")
       player_avg_data1
     }
   })
@@ -96,14 +105,14 @@ server <- function(input, output, session) {
     player_selected_data2$vaa = -atan(vzf / vyf) * (180 / pi)
     
     if (!is.null(player_selected_data2)) {
-      # Retrieve data for the selected player and create the player_avg_data table
       player_avg_data2 <- player_selected_data2 %>%
-        group_by(player_name, pitch_name) %>%
-        summarize(Average_Vertical_Approach = mean(vaa, na.rm = TRUE),
+        group_by(pitch_name) %>%
+        summarize(Average_VAA = mean(vaa, na.rm = TRUE),
                   XWOBA = mean(estimated_woba_using_speedangle, na.rm = TRUE),
                   Average_Exit_Velocity = mean(launch_speed, na.rm = TRUE),
                   Average_Launch_Angle = mean(launch_angle, na.rm = TRUE)
-        )
+        )%>%
+        filter(!is.na(pitch_name) & pitch_name != "")
       player_avg_data2
     }
   })
@@ -115,6 +124,33 @@ server <- function(input, output, session) {
       return(player_selected_data)
     }
     return(NULL)
+  })
+  
+  output$pitch_location_heatmap <- renderPlot({
+    player_selected_data <- player_data()
+    
+    if (!is.null(player_selected_data) && !is.null(input$selected_heatmap_pitch_type)) {
+      filtered_data <- player_selected_data %>%
+        filter(pitch_name == input$selected_heatmap_pitch_type)
+      
+      if (nrow(filtered_data) > 0) {
+        plot <- ggplot(filtered_data, aes(x = plate_x, y = plate_z)) +
+          stat_density_2d(aes(fill = after_stat(density)), geom = 'raster', contour = FALSE) +
+          scale_fill_gradientn(colours = c("blue", "white", "red")) +
+          annotate("rect", xmin = -1, xmax = 1, ymin = 1.6, ymax = 3.4, fill = NA, color = "black", alpha = 0.1) +
+          ylim(1, 4) +
+          xlim(-1.8, 1.8) +
+          theme_classic() +
+          xlab("Horizontal Pitch Location") +
+          ylab("Vertical Pitch Location") +
+          ggtitle("Pitch Location Heat Map", subtitle = "Catcher's Perspective") +
+          guides(fill = guide_colorbar(title = "Density"))
+        
+        return(plot)
+      } else {
+        return(NULL)
+      }
+    }
   })
   
   pitch_counts <- reactive({
@@ -183,20 +219,16 @@ server <- function(input, output, session) {
     }
   })
   
-  
-  # Create a scatter plot for pitch movement with labels for pitch counts
   output$pitch_movement_plot <- renderPlotly({
     player_selected_data <- player_data()
     
     if (!is.null(player_selected_data)) {
       pitch_movement_data <- player_selected_data
       
-      # Create a scatter plot using plotly with color based on pitch_name and labels for pitch counts
       plot <- plot_ly(data = pitch_movement_data, x = ~pfx_x, y = ~pfx_z, type = 'scatter',
                       mode = 'markers', text = ~paste(pitch_name, " (", pitch_counts()$Pitch_Count[match(pitch_name, pitch_counts()$pitch_name)], ")", sep = ""), 
                       color = ~pitch_name, colors = 'Set1', marker = list(size = 5))
       
-      # Customize the plot layout
       plot <- plot %>% layout(
         title = "Pitch Movement by Type",
         xaxis = list(title = "Horizontal Movement (pfx_x)"),
@@ -204,32 +236,6 @@ server <- function(input, output, session) {
       )
       
       return(plot)
-    }
-  })
-  
-  output$pitch_location_plot <- renderPlotly({
-    pitch_location_data_selected <- pitch_location_data()
-    
-    if (!is.null(pitch_location_data_selected)) {
-      location_plot <- plot_ly(
-        data = pitch_location_data_selected,
-        x = ~plate_x,
-        y = ~plate_z,
-        type = 'scatter',
-        mode = 'markers',
-        text = ~paste(pitch_name, " (", pitch_counts()$Pitch_Count[match(pitch_name, pitch_counts()$pitch_name)], ")", sep = ""),
-        color = ~pitch_name,
-        colors = 'Set1',
-        marker = list(size = 3)
-      )
-      
-      location_plot <- location_plot %>% layout(
-        title = "Pitch Location in the Strike Zone",
-        xaxis = list(title = "Horizontal Location (plate_x)"),
-        yaxis = list(title = "Vertical Location (plate_z)")
-      )
-      
-      return(location_plot)
     }
   })
   
@@ -257,7 +263,6 @@ server <- function(input, output, session) {
    if (!is.null(combined_data)) {
      filtered_data <- combined_data[combined_data$stand == "L",]
      
-     # Create ggplot object with facets
      plot <- ggplot(data = filtered_data, aes(x = ball_strike_count, y = Percentage_strikes, fill = pitch_name)) +
        geom_bar(stat = "identity", position = "dodge", width = 0.8) +
        geom_bar(aes(x = ball_strike_count, y = Percentage_balls, fill = pitch_name), 
@@ -274,7 +279,6 @@ server <- function(input, output, session) {
              plot.title = element_text(size = 12)) +  # Increase font size of plot title
        guides(fill = guide_legend(reverse = TRUE))  # Reverse legend order for better readability
      
-     # Convert ggplot object to plotly
      plot <- ggplotly(plot, tooltip = "text")
      
      return(plot)
@@ -287,7 +291,6 @@ server <- function(input, output, session) {
    if (!is.null(combined_data)) {
      filtered_data <- combined_data[combined_data$stand == "R",]
      
-     # Create ggplot object with facets
      plot <- ggplot(data = filtered_data, aes(x = ball_strike_count, y = Percentage_strikes, fill = pitch_name)) +
        geom_bar(stat = "identity", position = "dodge", width = 0.8) +
        geom_bar(aes(x = ball_strike_count, y = Percentage_balls, fill = pitch_name), 
@@ -305,14 +308,42 @@ server <- function(input, output, session) {
        guides(fill = guide_legend(reverse = TRUE))  # Reverse legend order for better readability
      
      
-     # Convert ggplot object to plotly
      plot <- ggplotly(plot, tooltip = "text")
      
      return(plot)
    }
- })
- 
-    }
+   })
+     
+   output$CSW_Table <- renderTable({
+       player_selected_data <- player_data()
+       
+       if (!is.null(player_selected_data)) {
+         strike_counts <- player_selected_data %>%
+           filter(description %in% c("called_strike", "swinging_strike")) %>%
+           group_by(pitch_name) %>%
+           summarize(
+             called_strikes = sum(description == "called_strike"),
+             swinging_strikes = sum(description == "swinging_strike")
+           )
+         
+         pitch_counts <- player_selected_data %>%
+           group_by(pitch_name) %>%
+           summarize(num_pitches = n())
+         
+         merged_dat <- merge(pitch_counts, strike_counts, by = "pitch_name", all = TRUE)
+         
+         merged_dat$csw_percentage <- ((merged_dat$called_strikes + merged_dat$swinging_strikes) / merged_dat$num_pitches) * 100
+         
+         merged_dat <- merged_dat[merged_dat$pitch_name != "", ]
+         
+         merged_dat$usage <- merged_dat$num_pitches / sum(merged_dat$num_pitches) * 100
 
-# Run the application
+         result <- merged_dat[, c("pitch_name", "num_pitches", "usage", "csw_percentage")]
+         
+         return(result)
+   }
+ })
+}
+ 
+
 shinyApp(ui = ui, server = server)
