@@ -5,15 +5,19 @@ library(plotly)
 library(readxl)
 library(openxlsx)
 library(ggplot2)
+library(DBI)
+library(RSQLite)
 
 tryCatch({
   data <- read.xlsx("IDtable.xlsx")
+  print("IDtable loaded successfully")
 }, error = function(e) {
+  print("Error loading IDtable:")
   print(e)
 })
 
 player_id <- function(last_name, first_name, data) {
-  id <- data$key_mlbam[data$name_last == last_name & data$name_first == first_name]
+  id <- data$player_id[data$last_name == last_name & data$first_name == first_name]
   if (length(id) == 0) {
     return("player not found")
   } else {
@@ -27,66 +31,106 @@ ui <- fluidPage(
     sidebarPanel(
       textInput("first_name", "First Name", ""),
       textInput("last_name", "Last Name", ""),
-      selectInput("selected_year", "Select Year", choices = 2016:as.numeric(format(Sys.Date(), "%Y"))),
+      selectInput("selected_year", "Select Year", choices = 2023:as.numeric(format(Sys.Date(), "%Y"))),
       actionButton("search_btn", "Retrieve Data"),
-      uiOutput("pitch_type_ui")
+      verbatimTextOutput("pitcher_type_display"), 
+      uiOutput("pitch_type_ui"),
+      selectInput("selected_count", "Select Count", 
+                  choices = c("All", "0-0", "0-1", "0-2", "1-0", "1-1", "1-2", "2-0", "2-1", "2-2", "3-0", "3-1", "3-2"), 
+                  selected = "All")
     ),
     mainPanel(
       plotlyOutput("pitch_movement_plot"),
-      plotOutput("pitch_location_heatmap"),
       tableOutput("Avg_Stats1"),
       tableOutput("Avg_Stats2"),
-      plotlyOutput("Combined_Pitch_Perc_L"),
-      plotlyOutput("Combined_Pitch_Perc_R")
-    )
+      fluidRow(
+        column(6, plotlyOutput("Combined_Pitch_Perc_L")),
+        column(6, plotlyOutput("Combined_Pitch_Perc_R")),
+      plotOutput("pitch_location_heatmap")
   )
+))
 )
 
 server <- function(input, output, session) {
-  player_data <- reactive({
-    req(input$search_btn)
-    last_name <- input$last_name
-    first_name <- input$first_name
-    player_id_result <- player_id(last_name, first_name, data)
+  player_data <- eventReactive(input$search_btn, {
+    player_id_result <- player_id(input$last_name, input$first_name, data)
+    if (player_id_result == "player not found") return(NULL)
     
-    if (player_id_result == "player not found") {
-      return(NULL)  
-    } else {
-      dat <- scrape_statcast_savant(
-        start_date = paste(input$selected_year, "-03-25", sep = ''),  
-        end_date = paste(input$selected_year, "-12-12", sep = ''),  
-        playerid = player_id_result,
-        player_type = "pitcher"
+    con <- dbConnect(RSQLite::SQLite(), "statcast_db.sqlite")
+    query <- paste0("SELECT * FROM mlbdata WHERE pitcher_id = ", player_id_result, " AND year = ", input$selected_year)
+    dat <- dbGetQuery(con, query)
+    dbDisconnect(con)
+    
+    if (nrow(dat) == 0) return(NULL)
+    
+    zone_percentage <- dat %>%
+      group_by(pitch_name) %>%
+      summarize(zone_percentage = round(mean(plate_x >= -1 & plate_x <= 1 & plate_z >= 1.6 & plate_z <= 3.4, na.rm = TRUE) * 100, 2))
+    
+    strike_counts <- dat %>%
+      filter(description %in% c("called_strike", "swinging_strike")) %>%
+      group_by(pitch_name) %>%
+      summarize(
+        called_strikes = sum(description == "called_strike"),
+        swinging_strikes = sum(description == "swinging_strike")
       )
+    
+    pitch_counts <- dat %>%
+      group_by(pitch_name) %>%
+      summarize(num_pitches = n(), usage_percentage = (n() / nrow(dat)) * 100)
+    
+    csw_percentage <- merge(pitch_counts, strike_counts, by = "pitch_name", all = TRUE) %>%
+      mutate(csw_percentage = ((called_strikes + swinging_strikes) / num_pitches) * 100)
+    
+    list(data = dat, zone_percentage = zone_percentage, csw_percentage = csw_percentage)
+  })
+  pitch_percentages_by_strikes <- reactive({
+    player_selected_data <- player_data()$data
+    
+    if (!is.null(player_selected_data)) {
+      pitch_counts_data <- player_selected_data %>%
+        group_by(pitch_name, strikes, bat_side) %>%
+        summarise(Pitch_Count = n())
       
-      # Calculate zone percentage
-      zone_percentage <- dat %>%
-        group_by(pitch_name) %>%
-        summarize(zone_percentage = round(mean(plate_x >= -1 & plate_x <= 1 &
-                                                 plate_z >= 1.6 & plate_z <= 3.4, na.rm = TRUE) * 100, 2))
+      pitch_counts_data <- pitch_counts_data %>%
+        group_by(strikes, bat_side) %>%
+        mutate(Percentage = (Pitch_Count / sum(Pitch_Count)) * 100)
       
-      # Calculate CSW percentage
-      strike_counts <- dat %>%
-        filter(description %in% c("called_strike", "swinging_strike")) %>%
-        group_by(pitch_name) %>%
-        summarize(
-          called_strikes = sum(description == "called_strike"),
-          swinging_strikes = sum(description == "swinging_strike")
-        )
-      
-      pitch_counts <- dat %>%
-        group_by(pitch_name) %>%
-        summarize(num_pitches = n())
-      
-      csw_percentage <- merge(pitch_counts, strike_counts, by = "pitch_name", all = TRUE) %>%
-        mutate(csw_percentage = ((called_strikes + swinging_strikes) / num_pitches) * 100)
-      
-      return(list(data = dat, zone_percentage = zone_percentage, csw_percentage = csw_percentage))
+      return(pitch_counts_data)
     }
   })
   
-  observeEvent(input$search_btn, {
-    updateSelectInput(session, "selected_name", choices = unique(player_data()$data$player_name))
+  pitch_percentages_by_balls <- reactive({
+    player_selected_data <- player_data()$data
+    
+    if (!is.null(player_selected_data)) {
+      pitch_percentages_data <- player_selected_data %>%
+        group_by(pitch_name, balls, bat_side) %>%
+        summarise(Pitch_Count = n())
+      
+      pitch_percentages_data <- pitch_percentages_data %>%
+        group_by(balls, bat_side) %>%
+        mutate(Percentage = (Pitch_Count / sum(Pitch_Count)) * 100)
+      
+      return(pitch_percentages_data)
+    }
+  })
+  
+  combined_pitch_percentages <- reactive({
+    pitch_percentages_strikes <- pitch_percentages_by_strikes()
+    pitch_percentages_balls <- pitch_percentages_by_balls()
+    
+    if (!is.null(pitch_percentages_strikes) && !is.null(pitch_percentages_balls)) {
+      combined_data <- merge(pitch_percentages_strikes, pitch_percentages_balls, 
+                             by = c("pitch_name", "bat_side"), suffixes = c("_strikes", "_balls"))
+      
+      
+      combined_data$ball_strike_count <- paste0("B", combined_data$balls, "-S", combined_data$strikes)
+      
+      return(combined_data)
+    } else {
+      return(NULL)
+    }
   })
   
   observe({
@@ -100,67 +144,93 @@ server <- function(input, output, session) {
     }
   })
   
-  output$Avg_Stats1 <- renderTable({
-    player_selected_data1 <- player_data()$data
+  four_seam_pitcher_type <- reactive({
+    dat <- player_data()$data
+    if (is.null(dat)) return(NULL)
     
-    if (!is.null(player_selected_data1)) {
-      player_avg_data1 <- player_selected_data1 %>%
+    fs_data <- dat %>%
+      filter(pitch_name == "4-Seam Fastball") %>%
+      mutate(
+        spin_eff = abs(sin(spin_axis * pi / 180)),
+        spin_type = ifelse(spin_eff < 0.689, "Supinator", "Pronator"),
+        arm_angle_bucket = case_when(
+          arm_angle > 60 ~ "Over-the-Top",
+          arm_angle > 45 ~ "High Â¾",
+          arm_angle > 30 ~ "Â¾",
+          arm_angle > 15 ~ "Low Â¾",
+          arm_angle >= 0 ~ "Sidearm",
+          arm_angle < 0 ~ "Submarine",
+          TRUE ~ "Unknown"
+        ),
+        pitcher_type = paste(spin_type, arm_angle_bucket, sep = " ")
+      )
+    
+    if (nrow(fs_data) > 0) {
+      return(fs_data$pitcher_type[which.max(table(fs_data$pitcher_type))])
+    } else {
+      return("No 4-Seam Data")
+    }
+  })
+  
+  output$pitcher_type_display <- renderText({
+    req(four_seam_pitcher_type())
+    paste("Pitcher Type:", four_seam_pitcher_type())
+  })
+  
+  output$Avg_Stats1 <- renderTable({
+    dat <- player_data()$data
+    if (!is.null(dat)) {
+      dat %>%
         group_by(pitch_name) %>%
         summarize(
-          Num_pitches = n(),
+          Usage_Percentage = (n() / nrow(dat)) * 100,
           Average_SpinRate = mean(release_spin_rate, na.rm = TRUE),
           Average_Velocity = mean(release_speed, na.rm = TRUE),
-          Average_Extension = mean(release_extension, na.rm = TRUE),
-          Average_ReleaseHeight = mean(release_pos_z, na.rm = TRUE)
+          Average_Extension = mean(extension, na.rm = TRUE),
+          Average_ReleaseHeight = mean(release_pos_z, na.rm = TRUE),
+          Average_ArmAngle = mean(arm_angle, na.rm = TRUE)
         ) %>%
         filter(!is.na(pitch_name) & pitch_name != "")
-      player_avg_data1
     }
   })
   
   output$Avg_Stats2 <- renderTable({
-    player_selected_data2 <- player_data()$data
-    zone_percentage <- player_data()$zone_percentage
-    csw_percentage <- player_data()$csw_percentage
-    
-    vyf = -sqrt(player_selected_data2$vy0^2 - (2 * player_selected_data2$ay * (50 - 17/12)))
-    t = (vyf - player_selected_data2$vy0) / player_selected_data2$ay
-    vzf = player_selected_data2$vz0 + (player_selected_data2$az * t)
-    player_selected_data2$vaa = -atan(vzf / vyf) * (180 / pi)
-    
-    if (!is.null(player_selected_data2)) {
-      player_avg_data2 <- player_selected_data2 %>%
+    dat <- player_data()$data
+    zp <- player_data()$zone_percentage
+    csw <- player_data()$csw_percentage
+    if (!is.null(dat)) {
+      vyf <- -sqrt(dat$vy0^2 - (2 * dat$ay * (50 - 17/12)))
+      t <- (vyf - dat$vy0) / dat$ay
+      vzf <- dat$vz0 + (dat$az * t)
+      dat$vaa <- -atan(vzf / vyf) * (180 / pi)
+      
+      dat %>%
         group_by(pitch_name) %>%
-        summarize(Average_VAA = mean(vaa, na.rm = TRUE),
-                  XWOBA = mean(estimated_woba_using_speedangle, na.rm = TRUE),
-                  Average_Exit_Velocity = mean(launch_speed, na.rm = TRUE),
-                  Average_Launch_Angle = mean(launch_angle, na.rm = TRUE)
+        summarize(
+          Average_VAA = mean(vaa, na.rm = TRUE),
+          XWOBA = mean(expected_woba, na.rm = TRUE),
+          Average_Exit_Velocity = mean(launch_speed, na.rm = TRUE),
+          Average_Launch_Angle = mean(launch_angle, na.rm = TRUE)
         ) %>%
         filter(!is.na(pitch_name) & pitch_name != "") %>%
-        left_join(zone_percentage, by = "pitch_name") %>%
-        left_join(csw_percentage %>% select(pitch_name, csw_percentage), by = "pitch_name")
-      player_avg_data2
+        left_join(zp, by = "pitch_name") %>%
+        left_join(csw %>% select(pitch_name, csw_percentage), by = "pitch_name")
     }
-  })
-  
-  pitch_location_data <- reactive({
-    player_selected_data <- player_data()$data
-    
-    if (!is.null(player_selected_data)) {
-      return(player_selected_data)
-    }
-    return(NULL)
   })
   
   output$pitch_location_heatmap <- renderPlot({
-    player_selected_data <- player_data()$data
-    
-    if (!is.null(player_selected_data) && !is.null(input$selected_heatmap_pitch_type)) {
-      filtered_data <- player_selected_data %>%
-        filter(pitch_name == input$selected_heatmap_pitch_type)
+    dat <- player_data()$data
+    if (!is.null(dat) && !is.null(input$selected_heatmap_pitch_type)) {
+      filtered <- dat %>% filter(pitch_name == input$selected_heatmap_pitch_type)
       
-      if (nrow(filtered_data) > 0) {
-        plot <- ggplot(filtered_data, aes(x = plate_x, y = plate_z)) +
+      if (input$selected_count != "All") {
+        count_parts <- strsplit(input$selected_count, "-")[[1]]
+        balls <- as.numeric(count_parts[1])
+        strikes <- as.numeric(count_parts[2])
+        filtered <- filtered %>% filter(balls == balls, strikes == strikes)
+      }
+      if (nrow(filtered) > 0) {
+        ggplot(filtered, aes(x = plate_x, y = plate_z)) +
           stat_density_2d(aes(fill = after_stat(density)), geom = 'raster', contour = FALSE) +
           scale_fill_gradientn(colours = c("blue", "white", "red")) +
           annotate("rect", xmin = -1, xmax = 1, ymin = 1.6, ymax = 3.4, fill = NA, color = "black", alpha = 0.1) +
@@ -169,157 +239,58 @@ server <- function(input, output, session) {
           theme_classic() +
           xlab("Horizontal Pitch Location") +
           ylab("Vertical Pitch Location") +
-          ggtitle("Pitch Location Heat Map", subtitle = "Catcher's Perspective") +
-          guides(fill = guide_colorbar(title = "Density"))
-        
-        return(plot)
-      } else {
-        return(NULL)
+          ggtitle("Pitch Location Heat Map", subtitle = "Catcher's Perspective")
       }
     }
   })
   
-  pitch_counts <- reactive({
-    player_selected_data <- player_data()$data
-    
-    if (!is.null(player_selected_data)) {
-      pitch_counts_data <- player_selected_data %>%
-        group_by(pitch_name) %>%
-        summarise(Pitch_Count = n())
-      
-      # Calculate the percentage for each pitch type
-      pitch_counts_data <- pitch_counts_data %>%
-        mutate(Percentage = (Pitch_Count / sum(Pitch_Count)) * 100)
-      
-      return(pitch_counts_data)
-    }
-  })
-  
-  pitch_percentages_by_strikes <- reactive({
-    player_selected_data <- player_data()$data
-    
-    if (!is.null(player_selected_data)) {
-      pitch_counts_data <- player_selected_data %>%
-        group_by(pitch_name, strikes, stand) %>%
-        summarise(Pitch_Count = n())
-      
-      # Calculate the percentage for each pitch type by strike count and stand
-      pitch_counts_data <- pitch_counts_data %>%
-        group_by(strikes, stand) %>%
-        mutate(Percentage = (Pitch_Count / sum(Pitch_Count)) * 100)
-      
-      return(pitch_counts_data)
-    }
-  })
-  
-  pitch_percentages_by_balls <- reactive({
-    player_selected_data <- player_data()$data
-    
-    if (!is.null(player_selected_data)) {
-      pitch_percentages_data <- player_selected_data %>%
-        group_by(pitch_name, balls, stand) %>%
-        summarise(Pitch_Count = n())
-      
-      # Calculate the percentage for each pitch type by ball count and stand
-      pitch_percentages_data <- pitch_percentages_data %>%
-        group_by(balls, stand) %>%
-        mutate(Percentage = (Pitch_Count / sum(Pitch_Count)) * 100)
-      
-      return(pitch_percentages_data)
-    }
-  })
-  
   output$pitch_movement_plot <- renderPlotly({
-    player_selected_data <- player_data()$data
-    
-    if (!is.null(player_selected_data)) {
-      pitch_movement_data <- player_selected_data
-      
-      plot <- plot_ly(data = pitch_movement_data, x = ~pfx_x, y = ~pfx_z, type = 'scatter',
-                      mode = 'markers', text = ~paste(pitch_name, " (", pitch_counts()$Pitch_Count[match(pitch_name, pitch_counts()$pitch_name)], ")", sep = ""), 
-                      color = ~pitch_name, colors = 'Set1', marker = list(size = 5))
-      
-      plot <- plot %>% layout(
-        title = "Pitch Movement by Type",
-        xaxis = list(title = "Horizontal Movement (pfx_x)"),
-        yaxis = list(title = "Vertical Movement (pfx_z)")
-      )
-      
-      return(plot)
-    }
-  })
-  
-  combined_pitch_percentages <- reactive({
-    pitch_percentages_strikes <- pitch_percentages_by_strikes()
-    pitch_percentages_balls <- pitch_percentages_by_balls()
-    
-    if (!is.null(pitch_percentages_strikes) && !is.null(pitch_percentages_balls)) {
-      # Merge data
-      combined_data <- merge(pitch_percentages_strikes, pitch_percentages_balls, 
-                             by = c("pitch_name", "stand"), suffixes = c("_strikes", "_balls"))
-      
-      # Create a new variable for combined ball and strike counts
-      combined_data$ball_strike_count <- paste0("B", combined_data$balls, "-S", combined_data$strikes)
-      
-      return(combined_data)
-    } else {
-      return(NULL)
+    dat <- player_data()$data
+    if (!is.null(dat)) {
+      plot_ly(data = dat, x = ~pfx_x, y = ~pfx_z, type = 'scatter',
+              mode = 'markers', text = ~paste(pitch_name), color = ~pitch_name,
+              colors = 'Set1', marker = list(size = 5)) %>%
+        layout(title = "Pitch Movement by Type",
+               xaxis = list(title = "Horizontal Movement (pfx_x)"),
+               yaxis = list(title = "Vertical Movement (pfx_z)"))
     }
   })
   
   output$Combined_Pitch_Perc_L <- renderPlotly({
-    combined_data <- combined_pitch_percentages()
-    
-    if (!is.null(combined_data)) {
-      filtered_data <- combined_data[combined_data$stand == "L",]
+    dat <- player_data()$data
+    if (!is.null(dat)) {
+      lefty <- dat %>% filter(bat_side == "L")
       
-      plot <- ggplot(data = filtered_data, aes(x = ball_strike_count, y = Percentage_strikes, fill = pitch_name)) +
-        geom_bar(stat = "identity", position = "dodge", width = 0.8) +
-        geom_bar(aes(x = ball_strike_count, y = Percentage_balls, fill = pitch_name), 
-                 stat = "identity", position = "dodge", width = 0.8) +
-        labs(title = "Pitch Type Percentages by Count vs LHB",
-             x = "Count",
-             y = "Percentage (%)",
-             fill = "Pitch Name") +
-        theme_minimal() +
-        theme(axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels
-              axis.title = element_text(size = 10),  # Increase font size of axis labels
-              legend.title = element_text(size = 12),  # Increase font size of legend title
-              legend.text = element_text(size = 10),  # Increase font size of legend text
-              plot.title = element_text(size = 12)) +  # Increase font size of plot title
-        guides(fill = guide_legend(reverse = TRUE))  # Reverse legend order for better readability
+      if (input$selected_count != "All") {
+        lefty <- lefty %>% filter(paste(balls, strikes, sep = "-") == input$selected_count)
+      }
       
-      plot <- ggplotly(plot, tooltip = "text")
+      counts <- lefty %>%
+        group_by(pitch_name) %>%
+        summarize(count = n()) %>%
+        mutate(perc = count / sum(count) * 100)
       
-      return(plot)
+      plot_ly(counts, labels = ~pitch_name, values = ~perc, type = 'pie') %>%
+        layout(title = paste('Pitch Type % vs LHH (Count:', input$selected_count, ')'), showlegend = TRUE)
     }
   })
   
   output$Combined_Pitch_Perc_R <- renderPlotly({
-    combined_data <- combined_pitch_percentages()
-    
-    if (!is.null(combined_data)) {
-      filtered_data <- combined_data[combined_data$stand == "R",]
+    dat <- player_data()$data
+    if (!is.null(dat)) {
+      righty <- dat %>% filter(bat_side == "R")
       
-      plot <- ggplot(data = filtered_data, aes(x = ball_strike_count, y = Percentage_strikes, fill = pitch_name)) +
-        geom_bar(stat = "identity", position = "dodge", width = 0.8) +
-        geom_bar(aes(x = ball_strike_count, y = Percentage_balls, fill = pitch_name), 
-                 stat = "identity", position = "dodge", width = 0.8) +
-        labs(title = "Pitch Type Percentages by Count vs RHB",
-             x = "Count",
-             y = "Percentage (%)",
-             fill = "Pitch Name") +
-        theme_minimal() +
-        theme(axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels
-              axis.title = element_text(size = 10),  # Increase font size of axis labels
-              legend.title = element_text(size = 12),  # Increase font size of legend title
-              legend.text = element_text(size = 10),  # Increase font size of legend text
-              plot.title = element_text(size = 12)) +  # Increase font size of plot title
-        guides(fill = guide_legend(reverse = TRUE))  # Reverse legend order for better readability
+      if (input$selected_count != "All") {
+        righty <- righty %>% filter(paste(balls, strikes, sep = "-") == input$selected_count)
+      }
       
-      plot <- ggplotly(plot, tooltip = "text")
+      counts <- righty %>%
+        group_by(pitch_name) %>%
+        summarize(count = n()) %>%
+        mutate(perc = count / sum(count) * 100)
       
-      return(plot)
+      plot_ly(counts, labels = ~pitch_name, values = ~perc, type = 'pie') %>%
+        layout(title = paste('Pitch Type % vs RHH (Count:', input$selected_count, ')'), showlegend = TRUE)
     }
   })
 }
